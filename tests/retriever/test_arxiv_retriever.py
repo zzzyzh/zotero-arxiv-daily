@@ -88,3 +88,35 @@ def test_run_with_hard_timeout_returns_none_on_failure(monkeypatch):
     )
     assert result is None
     assert "boom" in warnings[0]
+
+
+def test_arxiv_retriever_skips_batch_after_exhausted_429_retries(config, monkeypatch):
+    entries = [
+        feedparser.FeedParserDict(
+            id=f"oai:arXiv.org:2501.{i:05d}v1",
+            arxiv_announce_type="new",
+        )
+        for i in range(21)
+    ]
+    feed = SimpleNamespace(feed=SimpleNamespace(title="arXiv cs"), entries=entries)
+    monkeypatch.setattr(arxiv_retriever.feedparser, "parse", lambda _: feed)
+    monkeypatch.setattr(arxiv_retriever, "sleep", lambda _: None)
+
+    expected_paper = SimpleNamespace(title="ok")
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.calls = 0
+
+        def results(self, search):
+            self.calls += 1
+            if self.calls <= 5:
+                raise arxiv_retriever.arxiv.HTTPError("http://example.com", self.calls, 429)
+            return iter([expected_paper])
+
+    monkeypatch.setattr(arxiv_retriever.arxiv, "Client", FakeClient)
+
+    retriever = ArxivRetriever(config)
+    raw_papers = retriever._retrieve_raw_papers()
+
+    assert raw_papers == [expected_paper]
